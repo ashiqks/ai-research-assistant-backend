@@ -1,4 +1,4 @@
-AI Research Assistant  Backend
+AI Research Assistant Backend
 
 FastAPI backend for the AI Research Assistant Platform.
 Provides REST and WebSocket endpoints, CORS, and environment-driven configuration.
@@ -25,3 +25,22 @@ API_PREFIX=/api
 CORS_ORIGINS=http://localhost:5173
 HOST=0.0.0.0
 PORT=8000
+
+---
+
+## Database (Postgres via Docker Compose)
+1. Copy `.env.example` to `.env` and adjust if needed.
+2. Start Postgres:
+   ```powershell
+   ./scripts/db-up.ps1
+   ```
+3. Tail logs:
+   ```powershell
+   ./scripts/db-logs.ps1
+   ```
+4. Stop and remove:
+   ```powershell
+   ./scripts/db-down.ps1
+   ```
+
+FAISS will be used in-process for development; no additional service needed.
