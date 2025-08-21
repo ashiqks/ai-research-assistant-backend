@@ -1,20 +1,24 @@
 from pydantic_settings import BaseSettings
-from typing import List
-import os
+from pydantic import Field, computed_field
+
 
 class Settings(BaseSettings):
-    app_env: str = os.getenv("APP_ENV", "development")
-    api_prefix: str = os.getenv("API_PREFIX", "/api")
-    cors_origins: List[str] = []
+    app_env: str = Field(default="development", alias="APP_ENV")
+    api_prefix: str = Field(default="/api", alias="API_PREFIX")
+    cors_origins_csv: str | None = Field(default=None, alias="CORS_ORIGINS")
 
-    class Config:
-        env_prefix = ""
-        env_file = ".env"
+    model_config = {
+        "env_file": ".env",
+        "extra": "ignore",
+        "populate_by_name": True,
+    }
 
-    def __init__(self, **values):
-        super().__init__(**values)
-        raw = os.getenv("CORS_ORIGINS", "")
-        if raw:
-            self.cors_origins = [o.strip() for o in raw.split(",") if o.strip()]
+    @computed_field
+    @property
+    def cors_origins(self) -> list[str]:
+        if self.cors_origins_csv:
+            return [o.strip() for o in self.cors_origins_csv.split(",") if o.strip()]
+        return []
+
 
 settings = Settings()

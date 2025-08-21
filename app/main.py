@@ -1,10 +1,10 @@
-from fastapi import FastAPI, WebSocket, Depends, HTTPException, status
+from fastapi import FastAPI, WebSocket, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnect
 from .config import settings
-import httpx
-from jose import jwt
+from jwt import PyJWKClient, decode as jwt_decode, get_unverified_header
 from typing import Dict, Any
+import os
 
 app = FastAPI(title="AI Research Assistant Backend")
 
@@ -38,8 +38,9 @@ class AuthError(HTTPException):
         super().__init__(status_code=code, detail=detail)
 
 
-async def verify_jwt(authorization: str | None = None) -> Dict[str, Any]:
-    if authorization is None:
+async def verify_jwt(request: Request) -> Dict[str, Any]:
+    authorization = request.headers.get("Authorization")
+    if not authorization:
         raise AuthError("Missing Authorization header")
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
@@ -52,24 +53,12 @@ async def verify_jwt(authorization: str | None = None) -> Dict[str, Any]:
         raise AuthError("Auth0 env vars not configured")
 
     jwks_url = f"https://{domain}/.well-known/jwks.json"
-    async with httpx.AsyncClient(timeout=10) as client:
-        jwks_resp = await client.get(jwks_url)
-        jwks = jwks_resp.json()
-
-    unverified_header = jwt.get_unverified_header(token)
-    kid = unverified_header.get("kid")
-    public_key = None
-    for key in jwks.get("keys", []):
-        if key.get("kid") == kid:
-            public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
-            break
-    if public_key is None:
-        raise AuthError("Public key not found")
-
+    jwks_client = PyJWKClient(jwks_url)
+    signing_key = jwks_client.get_signing_key_from_jwt(token)
     try:
-        payload = jwt.decode(
+        payload = jwt_decode(
             token,
-            public_key,
+            signing_key.key,
             algorithms=["RS256"],
             audience=audience,
             issuer=f"https://{domain}/",
