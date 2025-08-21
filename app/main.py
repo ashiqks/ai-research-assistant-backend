@@ -1,7 +1,10 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnect
 from .config import settings
+import httpx
+from jose import jwt
+from typing import Dict, Any
 
 app = FastAPI(title="AI Research Assistant Backend")
 
@@ -27,3 +30,56 @@ async def websocket_endpoint(ws: WebSocket):
             await ws.send_text(data)
     except WebSocketDisconnect:
         pass
+
+
+# --- Auth0 JWT verification ---
+class AuthError(HTTPException):
+    def __init__(self, detail: str, code: int = status.HTTP_401_UNAUTHORIZED):
+        super().__init__(status_code=code, detail=detail)
+
+
+async def verify_jwt(authorization: str | None = None) -> Dict[str, Any]:
+    if authorization is None:
+        raise AuthError("Missing Authorization header")
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise AuthError("Invalid Authorization header")
+    token = parts[1]
+
+    domain = os.getenv("AUTH0_DOMAIN", "")
+    audience = os.getenv("AUTH0_AUDIENCE", "")
+    if not domain or not audience:
+        raise AuthError("Auth0 env vars not configured")
+
+    jwks_url = f"https://{domain}/.well-known/jwks.json"
+    async with httpx.AsyncClient(timeout=10) as client:
+        jwks_resp = await client.get(jwks_url)
+        jwks = jwks_resp.json()
+
+    unverified_header = jwt.get_unverified_header(token)
+    kid = unverified_header.get("kid")
+    public_key = None
+    for key in jwks.get("keys", []):
+        if key.get("kid") == kid:
+            public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
+            break
+    if public_key is None:
+        raise AuthError("Public key not found")
+
+    try:
+        payload = jwt.decode(
+            token,
+            public_key,
+            algorithms=["RS256"],
+            audience=audience,
+            issuer=f"https://{domain}/",
+        )
+    except Exception as e:
+        raise AuthError(f"Token validation failed: {e}")
+
+    return payload
+
+
+@app.get("/api/protected")
+async def protected_route(payload: Dict[str, Any] = Depends(verify_jwt)):
+    return {"message": "ok", "sub": payload.get("sub")}
