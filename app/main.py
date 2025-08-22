@@ -1,10 +1,15 @@
 from fastapi import FastAPI, WebSocket, Depends, HTTPException, status, Request
+from fastapi import Body
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnect
 from .config import settings
 from jwt import PyJWKClient, decode as jwt_decode, get_unverified_header
 from typing import Dict, Any
 import os
+from sqlalchemy.orm import Session
+from app.db.session import get_db
+from app.db.models import User
+from app.memory.service import store_memory, retrieve_memory
 
 app = FastAPI(title="AI Research Assistant Backend")
 
@@ -72,3 +77,41 @@ async def verify_jwt(request: Request) -> Dict[str, Any]:
 @app.get("/api/protected")
 async def protected_route(payload: Dict[str, Any] = Depends(verify_jwt)):
     return {"message": "ok", "sub": payload.get("sub")}
+
+
+def _get_or_create_user(db: Session, sub: str, email: str | None = None) -> int:
+    user = db.query(User).filter(User.auth0_sub == sub).first()
+    if user:
+        return user.id
+    user = User(auth0_sub=sub, email=email)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user.id
+
+
+@app.post("/api/memories")
+async def api_store_memory(
+    payload: Dict[str, Any] = Depends(verify_jwt),
+    body: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
+    user_id = _get_or_create_user(db, sub=payload.get("sub", ""), email=payload.get("email"))
+    content: str = body.get("content", "")
+    metadata: Dict[str, Any] | None = body.get("metadata")
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+    memory_id = store_memory(user_id=user_id, content=content, metadata=metadata)
+    return {"id": memory_id}
+
+
+@app.get("/api/memories/search")
+async def api_search_memory(
+    q: str,
+    k: int = 5,
+    payload: Dict[str, Any] = Depends(verify_jwt),
+    db: Session = Depends(get_db),
+):
+    user_id = _get_or_create_user(db, sub=payload.get("sub", ""), email=payload.get("email"))
+    results = retrieve_memory(user_id=user_id, query=q, k=k)
+    return {"results": results}
