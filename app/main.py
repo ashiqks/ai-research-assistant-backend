@@ -12,6 +12,8 @@ from app.db.models import User
 from app.memory.service import store_memory, retrieve_memory
 from app.agents.graph import build_graph
 import anyio
+from weasyprint import HTML
+from fastapi.responses import Response
 
 app = FastAPI(title="AI Research Assistant Backend")
 
@@ -147,3 +149,24 @@ async def research_stream(ws: WebSocket, run_id: str, q: str = "demo", user_id: 
         await ws.send_json({"event": "done"})
     except WebSocketDisconnect:
         pass
+
+
+@app.post("/api/export/pdf")
+async def export_pdf(
+    payload: Dict[str, Any] = Depends(verify_jwt),
+    body: Dict[str, Any] = Body(...),
+):
+    title = body.get("title", "Research Report")
+    sections = body.get("sections", [])  # [{heading, body}]
+    # Basic HTML template
+    parts = [
+        f"<h1 style='font-family: system-ui'>{title}</h1>"
+    ]
+    for s in sections:
+        h = s.get("heading", "")
+        b = s.get("body", "")
+        parts.append(f"<h2 style='font-family: system-ui'>{h}</h2>")
+        parts.append(f"<p style='white-space: pre-wrap; font-family: system-ui'>{b}</p>")
+    html = "".join(parts)
+    pdf_bytes = HTML(string=html).write_pdf()
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=report.pdf"})
