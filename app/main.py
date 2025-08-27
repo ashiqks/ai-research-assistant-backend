@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models import User
 from app.memory.service import store_memory, retrieve_memory
+from app.agents.graph import build_graph
+import anyio
 
 app = FastAPI(title="AI Research Assistant Backend")
 
@@ -35,7 +37,6 @@ async def websocket_endpoint(ws: WebSocket):
             await ws.send_text(data)
     except WebSocketDisconnect:
         pass
-
 
 # --- Auth0 JWT verification ---
 class AuthError(HTTPException):
@@ -115,3 +116,34 @@ async def api_search_memory(
     user_id = _get_or_create_user(db, sub=payload.get("sub", ""), email=payload.get("email"))
     results = retrieve_memory(user_id=user_id, query=q, k=k)
     return {"results": results}
+
+
+@app.post("/api/research")
+async def start_research(
+    payload: Dict[str, Any] = Depends(verify_jwt),
+    body: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
+    user_id = _get_or_create_user(db, sub=payload.get("sub", ""), email=payload.get("email"))
+    query = body.get("query", "")
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    # Return ephemeral run id for now (could persist)
+    run_id = f"run-{user_id}-{abs(hash(query))%100000}"
+    return {"run_id": run_id, "query": query}
+
+
+@app.websocket("/ws/research/{run_id}")
+async def research_stream(ws: WebSocket, run_id: str, q: str = "demo", user_id: int = 0):
+    await ws.accept()
+    try:
+        async def send(event: str, data: Dict[str, Any]):
+            await ws.send_json({"event": event, "data": data})
+
+        graph = build_graph(lambda e, d: anyio.from_thread.run(send, e, d))
+        # Use provided query and user_id
+        state = {"user_id": user_id, "query": q}
+        graph.invoke(state)
+        await ws.send_json({"event": "done"})
+    except WebSocketDisconnect:
+        pass
