@@ -3,6 +3,7 @@ from typing import TypedDict, List, Dict, Any, Callable, Optional
 from langgraph.graph import StateGraph, END
 import httpx
 from duckduckgo_search import DDGS
+from urllib.parse import urlparse
 import trafilatura
 
 from app.memory.service import store_memory
@@ -17,16 +18,51 @@ class ResearchState(TypedDict, total=False):
     recommendations: List[str]
 
 
-async def web_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+def web_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    # Prefer English/US results and moderate safesearch
     with DDGS() as ddgs:
-        results = list(ddgs.text(query, max_results=max_results))
-    # normalize
-    return [{"title": r.get("title"), "url": r.get("href") or r.get("url") } for r in results]
+        results = list(
+            ddgs.text(
+                query,
+                region="us-en",
+                safesearch="moderate",
+                max_results=20,
+            )
+        )
+
+    # Filter out unwanted/non-English domains and prefer common TLDs
+    block_domains = {
+        "baidu.com",
+        "zhidao.baidu.com",
+        "weibo.com",
+        "qq.com",
+        "bilibili.com",
+        "zhihu.com",
+        "sogou.com",
+        "sina.com.cn",
+        "so.com",
+        "yandex.ru",
+    }
+    allow_tlds = (".com", ".org", ".net", ".edu", ".gov", ".ai", ".io", ".dev")
+
+    filtered: List[Dict[str, Any]] = []
+    for r in results:
+        url = (r.get("href") or r.get("url") or "").strip()
+        if not url:
+            continue
+        host = urlparse(url).netloc.lower()
+        if any(host.endswith(b) for b in block_domains):
+            continue
+        if not any(host.endswith(t) for t in allow_tlds):
+            continue
+        filtered.append({"title": r.get("title"), "url": url})
+
+    return filtered[:max_results]
 
 
-async def fetch_and_extract(url: str, client: httpx.AsyncClient) -> str:
+def fetch_and_extract(url: str, client: httpx.Client) -> str:
     try:
-        r = await client.get(url, timeout=15)
+        r = client.get(url, timeout=15)
         r.raise_for_status()
         extracted = trafilatura.extract(r.text, include_comments=False) or ""
         return extracted.strip()
@@ -34,14 +70,14 @@ async def fetch_and_extract(url: str, client: httpx.AsyncClient) -> str:
         return ""
 
 
-async def research_agent(state: ResearchState, emit: Callable[[str, Dict[str, Any]], None], client: httpx.AsyncClient) -> ResearchState:
+def research_agent(state: ResearchState, emit: Callable[[str, Dict[str, Any]], None], client: httpx.Client) -> ResearchState:
     query = state.get("query", "")
-    hits = await web_search(query, max_results=5)
+    hits = web_search(query, max_results=5)
     emit("search", {"hits": hits})
 
     findings: List[Dict[str, Any]] = []
     for hit in hits:
-        text = await fetch_and_extract(hit.get("url", ""), client)
+        text = fetch_and_extract(hit.get("url", ""), client)
         if not text:
             continue
         doc = {"title": hit.get("title"), "url": hit.get("url"), "text": text[:5000]}
@@ -61,7 +97,7 @@ def summarizer_agent(state: ResearchState, emit: Callable[[str, Dict[str, Any]],
     texts = [f["text"] for f in state.get("findings", [])]
     joined = "\n\n".join(t[:1000] for t in texts)  # trim each
     summary = joined[:4000] if joined else "No content"
-    emit("summary", {"length": len(summary)})
+    emit("summary", {"text": summary})
     return {**state, "summary": summary}
 
 
@@ -79,7 +115,7 @@ def recommendation_agent(state: ResearchState, emit: Callable[[str, Dict[str, An
         "Queue follow-up search with site:gov and site:edu",
         "Store top 3 sources to memory and schedule periodic refresh",
     ]
-    emit("recommendations", {"count": len(recs)})
+    emit("recommendations", {"items": recs})
     return {**state, "recommendations": recs}
 
 
@@ -88,11 +124,8 @@ def build_graph(emit: Callable[[str, Dict[str, Any]], None]):
 
     # wrap async nodes for langgraph sync graph via simple runner
     def research_node(s: ResearchState):
-        import anyio
-        async def run():
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                return await research_agent(s, emit, client)
-        return anyio.run(run)
+        with httpx.Client(follow_redirects=True) as client:
+            return research_agent(s, emit, client)
 
     g.add_node("research", research_node)
     g.add_node("summarize", lambda s: summarizer_agent(s, emit))

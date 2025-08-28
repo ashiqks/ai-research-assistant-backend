@@ -29,6 +29,7 @@ dependencies = [
     "lxml>=6.0.1",
     "beautifulsoup4>=4.13.5",
     "weasyprint>=66.0",
+    "reportlab>=4.4.3",
 ]
 
 [build-system]

@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     app_env: str = Field(default="development", alias="APP_ENV")
     api_prefix: str = Field(default="/api", alias="API_PREFIX")
     cors_origins_csv: str | None = Field(default=None, alias="CORS_ORIGINS")
+    auth0_domain: str | None = Field(default=None, alias="AUTH0_DOMAIN")
+    auth0_audience: str | None = Field(default=None, alias="AUTH0_AUDIENCE")
 
     model_config = {
         "env_file": ".env",
